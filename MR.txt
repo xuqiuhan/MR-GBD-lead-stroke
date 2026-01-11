@@ -1,0 +1,607 @@
+args <- commandArgs(trailingOnly = TRUE)
+
+UserName <- args[1] 
+exposure_path <- args[2]
+DataName2 <- args[3]
+Ref <- args[4]  
+Pval <- as.numeric(args[5])
+r2  <- as.numeric(args[6]) 
+Window <- as.numeric(args[7])
+task_id <- args[8]
+
+library(TwoSampleMR)
+library(MRPRESSO)
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+library(MendelianRandomization)
+library(ieugwasr)
+library(plinkbinr)
+library(metafor)
+library(openxlsx)
+
+t1 <- Sys.time()
+
+exposureanno <- fread("./lead_pqtl (1e-5)/5.pqtl(1e-5除肽段).csv")
+
+gwas_outcome <- tryCatch({
+  fread(paste0("./", UserName, "/data/", DataName2))
+}, error = function(e) {
+  stop(paste("Error reading outcome data: ", e$message))
+})
+
+exposure_files <- list.files(exposure_path, pattern = ".txt.gz$")
+
+for (i in 1:length(exposure_files)) {
+  DataName1 <- strsplit(exposure_files[i],split = ".txt.gz")[[1]][1]
+  message(paste("Processing exposure dataset: ", DataName1))
+  
+  output_dir <- file.path("./", UserName, "/FactorTwoSampleMR/", task_id, "/", DataName1)
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  log_file <- file.path(output_dir, "error.log")
+  if (!file.exists(log_file)) {
+    file.create(log_file)
+  }
+  
+  tryCatch({
+    gwas_exposure <- fread(paste0(exposure_path, "/", DataName1, ".txt.gz"))   
+    
+    gwas_exposure <- tryCatch({
+      fread(paste0(exposure_path, "/", exposure_files[i]))
+    }, error = function(e) {
+      msg <- paste("Error reading exposure data for", DataName1, ":", e$message)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return(NULL)
+    })
+    
+    if (is.null(gwas_exposure)) {
+      return()
+    }
+    
+    
+    gwas_exposure_filtered <- tryCatch({
+      gwas_exposure[which(as.numeric(gwas_exposure$P) < as.numeric(Pval)), ]
+    }, error = function(e) {
+      msg <- paste("No SNPs in exposure dataset under the P-value threshold for ", DataName1, ":", e$message)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return(NULL)
+    })
+    
+    message(paste(nrow(gwas_exposure_filtered), " SNP(s) under the threshold were included in LD analysis for ", DataName1))
+    
+    # Convert TwoSampleMR standard format for exposure data
+    message("Converting exposure data to TwoSampleMR standard format...")
+    
+    gwas_exposure_df <- as.data.frame(gwas_exposure_filtered)
+    
+    exp_dat <- tryCatch({
+      format_data(gwas_exposure_df,
+                  type = 'exposure', 
+                  snp_col = "SNP", 
+                  chr_col = "CHR", 
+                  pos_col = "BP", 
+                  other_allele_col = "A2", 
+                  effect_allele_col = "A1", 
+                  beta_col = "BETA", 
+                  se_col = "SE", 
+                  eaf_col = "FREQ", 
+                  pval_col = "P", 
+                  phenotype_col = "phenotype", 
+                  samplesize_col = "N"
+      )
+    }, error = function(e) {
+      msg <- paste("Error formatting exposure data for", DataName1, ":", e$message)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return(NULL)
+    })
+    
+    if (is.null(exp_dat)) {
+      return()
+    }
+    
+    # Local LD analysis
+    message("Performing local LD analysis...")
+    
+    exp_dat_clump <- tryCatch({
+      ld_clump(
+        clump_kb = Window, 
+        clump_r2 = r2, 
+        pop = Ref, 
+        dplyr::tibble(rsid = exp_dat$SNP, pval = exp_dat$pval.exposure, id = exp_dat$id.exposure),
+        plink_bin = get_plink_exe(), 
+        bfile = paste0("/data_alluser/PosGWASer/1kgld/", Ref)
+      )
+    }, error = function(e) {
+      msg <- paste("Error during LD clumping for", DataName1, ":", e$message)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return(NULL)
+    })
+    
+    
+    if (is.null(exp_dat_clump) || nrow(exp_dat_clump) == 0) {
+      msg <- paste("No SNPs remaining after LD clumping for", DataName1)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return()  
+    }
+    
+    # IVs in outcome
+    gwas_outcome_df <- as.data.frame(gwas_outcome)
+    out_dat <- tryCatch({
+      format_data(dat = gwas_outcome_df,
+                  type = "outcome",
+                  snps = exp_dat_clump$rsid,
+                  snp_col = "SNP", 
+                  chr_col = "CHR", 
+                  pos_col = "BP", 
+                  other_allele_col = "A2", 
+                  effect_allele_col = "A1", 
+                  beta_col = "BETA", 
+                  se_col = "SE", 
+                  eaf_col = "FREQ", 
+                  pval_col = "P", 
+                  phenotype_col = "phenotype", 
+                  samplesize_col = "N"
+      )
+    }, error = function(e) {
+      msg <- paste("Error formatting outcome data for", DataName1, ":", e$message)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return(NULL)
+    })
+    
+    # outcome中找不到，然后就跳过
+    
+    if (is.null(out_dat) || nrow(out_dat) == 0) {
+      msg <- paste("No SNPs found in outcome dataset for ", DataName1)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return()  # 跳过当前数据集
+    }
+    
+    # Harmonising
+    exp_data_clump <- subset(exp_dat, SNP %in% exp_dat_clump$rsid)
+    mydata <- harmonise_data(exposure_dat = exp_data_clump, outcome_dat = out_dat, action = 2)
+    mydata <- mydata[which(mydata$mr_keep == TRUE), ]
+    
+    if (nrow(mydata) == 0) {
+      msg <- paste("All SNPs were eliminated during harmonisation for ", DataName1)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return()  # 跳过当前数据集
+    }
+    
+    # Excluding SNPs associated with outcome
+    mydata_filteroutcome <- mydata[which(mydata$pval.outcome >= 1e-5), ]
+    mydata_filteroutcome$MAF <- ifelse(mydata_filteroutcome$eaf.outcome <= 0.5, mydata_filteroutcome$eaf.outcome, 1 - mydata_filteroutcome$eaf.outcome)
+    mydata_filteroutcome <- mydata_filteroutcome[which(mydata_filteroutcome$MAF > 0.01), ]
+    
+    if (nrow(mydata_filteroutcome) == 0) {
+      msg <- paste("No SNPs remaining after filtering outcome-associated SNPs and ensuring MAF > 0.01 for ", DataName1)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return()  # 跳过当前数据集
+    }
+    
+    # MR-PRESSO analysis
+    mydata_outcome_n <- nrow(mydata_filteroutcome)
+    Nbd <- nrow(mydata_filteroutcome)/0.05+1 
+    
+    if (Nbd <= 1000) {
+      Nbd = 10000
+    } else if (Nbd > 1000 & Nbd < 10000) {
+      Nbd <- nrow(mydata_filteroutcome)/0.05+1
+    } else {
+      Nbd = 1000
+    }
+    
+    message("Performing MR-PRESSO analysis...")
+    
+    if (mydata_outcome_n <= 3) {
+      presso_pval <- "NA"
+      mydata_presso <- mydata_filteroutcome
+    } else {
+      presso <- mr_presso(
+        BetaOutcome = "beta.outcome", BetaExposure = "beta.exposure", 
+        SdOutcome = "se.outcome", SdExposure = "se.exposure", 
+        OUTLIERtest = TRUE, DISTORTIONtest = TRUE, 
+        data = mydata_filteroutcome, 
+        NbDistribution = Nbd,  SignifThreshold = 0.05
+      )
+      
+      presso_pval <- presso$`MR-PRESSO results`$`Global Test`$Pvalue
+      presso_snp <- presso$`MR-PRESSO results`$`Outlier Test`
+      
+      if (presso_pval >= 0.05) {
+        mydata_presso <- mydata_filteroutcome
+      } else {
+        out_order <- order(presso_snp$Pvalue)
+        for (ii in 1:length(out_order)) {
+          snp_ii <- out_order[1:ii]
+          mydata_presso <- mydata_filteroutcome[-snp_ii, ]
+          mydata_pres_n <- nrow(mydata_presso)
+          
+          if (mydata_pres_n <= 3) {
+            presso_pval <- "NA"
+            break
+          }
+          
+          presso2 <- mr_presso(
+            BetaOutcome = "beta.outcome", BetaExposure = "beta.exposure", 
+            SdOutcome = "se.outcome", SdExposure = "se.exposure", 
+            OUTLIERtest = TRUE, DISTORTIONtest = TRUE, 
+            data = mydata_presso, 
+            NbDistribution = Nbd,  SignifThreshold = 0.05
+          )
+          
+          presso_pval <- presso2$`MR-PRESSO results`$`Global Test`$Pvalue
+          mydata_presso<-mydata_presso
+          
+          if (presso_pval >= 0.05) {
+            break
+          }
+        }
+      }
+    }
+    
+    if (nrow(mydata_presso) == 0) {
+      msg <- paste("No SNPs remaining after MR-PRESSO analysis for ", DataName1)
+      warning(msg)
+      if (file.exists(log_file)) {
+        file_connection <- file(log_file, open = "a")
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+        close(file_connection)
+      } else {
+        writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+      }
+      return()  # 跳过当前数据集
+    }
+    
+    # Filtered data
+    exp_n <- nrow(exp_dat)
+    out_n <- nrow(out_dat)
+    mydata_clu_n <- nrow(exp_dat_clump)
+    mydata_har_n <- nrow(mydata)
+    mydata_outcome_n <- nrow(mydata_filteroutcome)
+    mydata_pres_n <- nrow(mydata_presso)
+    filter_data <- data.frame(
+      exp_n, out_n, mydata_clu_n, mydata_har_n, 
+      mydata_outcome_n, mydata_pres_n, presso_pval
+    )
+    
+    # MR Steiger directionality test
+    steiger_snpi <- steiger_filtering(mydata_presso)
+    out <- directionality_test(mydata_presso)
+    
+    # Calculate the F statistic
+    message("Calculating F statistic...")
+    k <- mydata_pres_n
+    N <- as.numeric(names(which.max(table(mydata_presso$samplesize.exposure))))
+    r2.exposure <- out$snp_r2.exposure
+    F.exposure <- (r2.exposure/(1 - r2.exposure)) * ((N - k - 1)/k)
+    out$F.exposure <- F.exposure
+    
+    # MR analysis
+    message("Performing MR analysis...")
+    set.seed(5201314)
+    res <- mr(mydata_presso, method_list = c(
+      "mr_egger_regression", "mr_ivw", "mr_ivw_mre", "mr_ivw_fe", 
+      "mr_wald_ratio", "mr_weighted_median", "mr_two_sample_ml", 
+      "mr_simple_mode", "mr_weighted_mode"
+    ))
+    
+    res2 <- mr(mydata_presso, method_list = c(
+      "mr_egger_regression", "mr_ivw", "mr_weighted_median", 
+      "mr_simple_mode", "mr_weighted_mode"
+    ))
+    
+    res_or <- generate_odds_ratios(res)
+    
+    # Sensitivity analysis
+    message("Performing sensitivity analysis...")
+    het <- mr_heterogeneity(mydata_presso, method_list = c("mr_egger_regression", "mr_ivw"))
+    plt <- mr_pleiotropy_test(mydata_presso)
+    
+    # I2 calculation
+    res_single1 <- mr_singlesnp(mydata_presso, all_method = "mr_ivw")
+    res_single2 <- res_single1[grep("^rs", res_single1$SNP), ]
+    res_meta <- metafor::rma(
+      yi = res_single2$b, sei = res_single2$se, 
+      weights = 1 / mydata_presso$se.outcome^2, data = res_single2, 
+      method = 'FE'
+    )
+    I2 <- as.data.frame(cbind(res_meta$I2, res_meta$H2))
+    colnames(I2) <- c("I2", "H2")
+    
+    # LOO analysis
+    res_loo <- mr_leaveoneout(mydata_presso)
+    
+    # Default visualization
+    message("Generating visualizations...")
+    p1 <- mr_scatter_plot(res, mydata_presso)
+    p1.2 <- mr_scatter_plot(res2, mydata_presso)
+    res_single <- mr_singlesnp(mydata_presso)
+    p2 <- mr_forest_plot(res_single)
+    p3 <- mr_funnel_plot(res_single)
+    p4 <- mr_leaveoneout_plot(res_loo)
+    
+    # Output data
+    message("Writing output files...")
+    
+    # 使用 output_dir 作为输出路径
+    ggsave(p1[[1]], file = file.path(output_dir, "mr_scatter_plot.pdf"), width = 7, height = 7)
+    ggsave(p1.2[[1]], file = file.path(output_dir, "mr_scatter_plot2.pdf"), width = 7, height = 7)
+    ggsave(p2[[1]], file = file.path(output_dir, "mr_forest_plot.pdf"), width = 7, height = 7)
+    ggsave(p3[[1]], file = file.path(output_dir, "mr_funnel_plot.pdf"), width = 7, height = 7)
+    ggsave(p4[[1]], file = file.path(output_dir, "mr_leaveoneout_plot.pdf"), width = 7, height = 7)
+    
+    write.table(mydata_presso, file = file.path(output_dir, "mydata_presso.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+    write.table(res, file = file.path(output_dir, "res.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+    write.table(res_or, file = file.path(output_dir, "res_or.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+    write.table(het, file = file.path(output_dir, "het.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+    write.table(plt, file = file.path(output_dir, "plt.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+    write.table(I2, file = file.path(output_dir, "I2.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+    write.table(filter_data, file = file.path(output_dir, "filter_data.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+    write.table(steiger_snpi, file = file.path(output_dir, "steiger_snpi.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+    write.table(out, file = file.path(output_dir, "out.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+    
+    message(paste("Finished processing", DataName1))
+    
+  }, error = function(e) {
+    msg <- paste("Error processing", DataName1, ":", conditionMessage(e))
+    warning(msg)
+    if (file.exists(log_file)) {
+      file_connection <- file(log_file, open = "a")
+      writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = file_connection)
+      close(file_connection)
+    } else {
+      writeLines(paste("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), msg), con = log_file)
+    }
+  })
+}
+
+t2 <- Sys.time()
+message("MR process done in ", round(difftime(t2, t1, units = "mins"), 3), " minutes.")
+
+#========================= 1.MR结果汇总 #=========================
+setwd(file.path("./", UserName, "/FactorTwoSampleMR/", task_id))
+files <- list.files()
+files <- files[file.info(files)$isdir]
+
+mr_Causal_EBI <- data.frame()
+for (i in 1:length(files)) {
+  dirpath <- paste0("./", UserName, "/FactorTwoSampleMR/", task_id, "/", files[i])
+  setwd(dirpath)
+  res_or <- tryCatch({
+    fread("res_or.txt", data.table = FALSE, header = TRUE)
+  }, error = function(e) {
+    msg <- paste("Error reading res_or.txt in", dirpath, ":", e$message)
+    warning(msg)
+    return(NULL)
+  })
+  if (is.null(res_or)) next
+  
+  out <- tryCatch({
+    fread("out.txt", data.table = FALSE, header = TRUE)
+  }, error = function(e) {
+    msg <- paste("Error reading out.txt in", dirpath, ":", e$message)
+    warning(msg)
+    return(NULL)
+  })
+  if (is.null(out)) next
+  
+  mr_Causal <- res_or[, !(colnames(res_or) %in% c("id.exposure", "id.outcome", "lo_ci", "up_ci"))]
+  R2 <- out$snp_r2.exposure
+  F <- out$F.exposure
+  mr_Causal$R2 <- R2
+  mr_Causal$F <- F
+  mr_Causal_EBI <- rbind(mr_Causal_EBI, mr_Causal)
+  print(i)
+}
+mr_Causal_EBI$fdr <- p.adjust(mr_Causal_EBI$pval, method = "BH")
+write.csv(mr_Causal_EBI, file.path("./", UserName, "/FactorTwoSampleMR/", task_id, "1.mr_Causal_EBI.csv"), row.names = FALSE)
+
+#========================= 2.敏感性结果汇总 #=========================
+setwd(file.path("./", UserName, "/FactorTwoSampleMR/", task_id))
+files <- list.files()
+files <- files[file.info(files)$isdir]
+
+mr_Sensitive_analysis <- data.frame()
+for (i in 1:length(files)) {
+  
+  dirpath <- paste0("./", UserName, "/FactorTwoSampleMR/", task_id, "/", files[i])
+  setwd(dirpath)
+  
+  res <- tryCatch({
+    fread("res.txt", data.table = FALSE, header = TRUE)
+  }, error = function(e) {
+    msg <- paste("Error reading res.txt in", dirpath, ":", e$message)
+    warning(msg)
+    return(NULL)
+  })
+  if (is.null(res)) next
+  
+  out <- tryCatch({
+    fread("out.txt", data.table = FALSE, header = TRUE)
+  }, error = function(e) {
+    msg <- paste("Error reading out.txt in", dirpath, ":", e$message)
+    warning(msg)
+    return(NULL)
+  })
+  if (is.null(out)) next
+  
+  filter_data <- tryCatch({
+    fread("filter_data.txt", data.table = FALSE, header = TRUE)
+  }, error = function(e) {
+    msg <- paste("Error reading filter_data.txt in", dirpath, ":", e$message)
+    warning(msg)
+    return(NULL)
+  })
+  if (is.null(filter_data)) next
+  
+  outcome <- res$outcome[1]
+  exposure <- res$exposure[1]
+  method <- res$method
+  No.SNP <- filter_data$mydata_pres_n
+  MR_PRESSO_Global_Pval <- filter_data$presso_pval
+  
+  ###plt；当仅有1个工具变量时，数据为空，无头行
+  if("Wald ratio" %in% method){
+    MR_egger_intercept<-"NA"
+    MR_egger_se<-"NA"
+    MR_egger_Pval<-"NA"
+  }else{
+    plt<-fread("plt.txt",data.table = F, header = T)
+    MR_egger_intercept<-plt$egger_intercept
+    MR_egger_se<-plt$se
+    MR_egger_Pval<-plt$pval
+  }
+  ###het；当仅有1个工具变量时，数据为空，无头行；也可能仅有IVW结果，无MR-egger结果
+  if("Wald ratio" %in% method){
+    MR_egger_Q<-"NA"
+    MR_egger_Q_df<-"NA"
+    MR_egger_Q_pval<-"NA"
+    IVW_Q<-"NA"
+    IVW_Q_df<-"NA"
+    IVW_Q_pval<-"NA"
+  }else{
+    #
+    het<-fread("het.txt",data.table = F, header = T)
+    if("MR Egger" %in% het$method){
+      MR_egger_Q<-het[grep(pattern="MR Egger",het$method),6]
+      MR_egger_Q_df<-het[grep(pattern="MR Egger",het$method),7]
+      MR_egger_Q_pval<-het[grep(pattern="MR Egger",het$method),8]
+    }else{
+      MR_egger_Q<-"NA"
+      MR_egger_Q_df<-"NA"
+      MR_egger_Q_pval<-"NA"
+    }
+    if("Inverse variance weighted" %in% het$method){
+      IVW_Q<-het[grep(pattern="Inverse variance weighted",het$method),6]
+      IVW_Q_df<-het[grep(pattern="Inverse variance weighted",het$method),7]
+      IVW_Q_pval<-het[grep(pattern="Inverse variance weighted",het$method),8]
+    }else{
+      IVW_Q<-"NA"
+      IVW_Q_df<-"NA"
+      IVW_Q_pval<-"NA"
+    }
+    #
+  }
+  
+  I2 <- fread("I2.txt")
+  
+  mr_Sensitive_analysis_i <- data.frame(
+    outcome, exposure, No.SNP, MR_PRESSO_Global_Pval, MR_egger_intercept, MR_egger_se,
+    MR_egger_Pval, IVW_Q, IVW_Q_df, IVW_Q_pval, I2, MR_egger_Q, MR_egger_Q_df,
+    MR_egger_Q_pval, correct_causal_direction = out$correct_causal_direction,
+    steiger_pval = out$steiger_pval
+  )
+  mr_Sensitive_analysis <- rbind(mr_Sensitive_analysis, mr_Sensitive_analysis_i)
+  print(i)
+}
+write.table(mr_Sensitive_analysis, file.path("./", UserName, "/FactorTwoSampleMR/", task_id, "2.mr_Sensitive_analysis.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+
+#========================= 3.异质性筛选 #=========================
+setwd(file.path("./", UserName, "/FactorTwoSampleMR/", task_id))
+mr_Causal <- read.csv(file.path("./", UserName, "/FactorTwoSampleMR/", task_id, "1.mr_Causal_EBI.csv"))
+EBI_All <- mr_Sensitive_analysis$exposure
+EBI_het <- EBI_All[which(mr_Sensitive_analysis$IVW_Q_pval < 0.05)]
+EBI_nohet <- EBI_All[which(mr_Sensitive_analysis$IVW_Q_pval > 0.05 | is.na(mr_Sensitive_analysis$IVW_Q_pval))]
+
+method_included <- c(
+  "Inverse variance weighted (fixed effects)", "Inverse variance weighted (multiplicative random effects)",
+  "MR Egger", "Weighted median", "Wald ratio", "Maximum likelihood", "Weighted mode"
+)
+mr_Causal_filter.method <- mr_Causal[mr_Causal$method %in% method_included, ]
+
+EBI.het.filter_fixed <- which((mr_Causal_filter.method$method %in% "Inverse variance weighted (fixed effects)") & (mr_Causal_filter.method$exposure %in% EBI_het))
+EBI.nohet.filter_random <- which((mr_Causal_filter.method$method %in% "Inverse variance weighted (multiplicative random effects)") & (mr_Causal_filter.method$exposure %in% EBI_nohet))
+
+if (length(EBI.het.filter_fixed) == 0 && length(EBI.nohet.filter_random) == 0) {
+  mr_Causal_filter.IVWfixedrandom <- mr_Causal_filter.method
+} else {
+  mr_Causal_filter.IVWfixedrandom <- mr_Causal_filter.method[-c(EBI.het.filter_fixed, EBI.nohet.filter_random), ]
+}
+
+write.csv(mr_Causal_filter.IVWfixedrandom, file.path("./", UserName, "/FactorTwoSampleMR/", task_id, "3.mr_causal_fixrandom_EBI.csv"), row.names = FALSE)
+
+#========================= 4.显著结果汇总 #=========================
+EBI_causal <- read.csv(file.path("./", UserName, "/FactorTwoSampleMR/", task_id, "3.mr_causal_fixrandom_EBI.csv"))
+pos1 <- grep("Inverse variance weighted", EBI_causal$method)
+pos2 <- grep("Wald ratio", EBI_causal$method)
+EBI_causal1 <- EBI_causal[c(pos1, pos2), ]
+EBI_causal2 <- EBI_causal1[which(EBI_causal1$pval < 0.05), ]
+EBI_causal3 <- EBI_causal2[, c(2, 1, 3:12)]
+
+EBI_sensitive <- read.table(file.path("./", UserName, "/FactorTwoSampleMR/", task_id, "2.mr_Sensitive_analysis.txt"), header = TRUE, sep = "\t")
+
+EBI_causal4 <- merge(EBI_causal3, EBI_sensitive[, c(2, 4:17)], by.x = "exposure", by.y = "exposure")
+fwrite(EBI_causal4, file.path("./", UserName, "/FactorTwoSampleMR/", task_id, "4.EBI_snesitive.csv"))
+
+
+
+
+
+t3 <- Sys.time()
+message("Overall process done in ", round(difftime(t3, t1, units = "mins"), 3), " minutes.")

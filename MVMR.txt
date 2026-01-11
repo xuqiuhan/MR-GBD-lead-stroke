@@ -1,0 +1,57 @@
+library(TwoSampleMR)
+library(data.table)
+library(plinkbinr)
+library(ieugwasr)
+exposure_files <- c(
+  "sd_GCST90100518_hg37.txt.gz",
+  "sd_GCST90100521_hg37.txt.gz", 
+  "sd_GCST90100530_hg37.txt.gz",
+  "sd_GCST90100524_hg37.txt.gz"
+)
+exposures_mv <- mv_extract_exposures_local(
+  filenames_exposure = exposure_files,
+  phenotype_col = "phenotype",   
+  snp_col = "SNP",
+  beta_col = "BETA",
+  se_col = "SE",
+  eaf_col = "FREQ",
+  effect_allele_col = "A1",
+  other_allele_col = "A2",
+  pval_col = "P",
+  samplesize_col = "N",
+  bfile = "D:/R_ref_data/MR_ref/EAS",
+  pop = "EAS",
+  plink_bin = get_plink_exe(),
+  clump_r2 = 0.01,
+  clump_kb = 10000,
+  pval_threshold = 5e-6,
+  sep = "\t",
+  harmonise_strictness = 2
+)
+outcome_raw <- fread("sd_i69.txt.gz", header = TRUE)
+outcome_raw <- as.data.frame(outcome_raw)
+outcome <- format_data(dat = outcome_raw,
+                       type = "outcome",
+                       snps = exposures_mv$SNP,
+                       snp_col = "SNP", 
+                       chr_col = "CHR", 
+                       pos_col = "BP", 
+                       other_allele_col = "A2", 
+                       effect_allele_col = "A1", 
+                       beta_col = "BETA", 
+                       se_col = "SE", 
+                       eaf_col = "FREQ", 
+                       pval_col = "P", 
+                       phenotype_col = "phenotype", 
+                       samplesize_col = "N"
+)
+mv_data <- mv_harmonise_data(exposures_mv,outcome,harmonise_strictness = 2)
+library(MendelianRandomization)
+mvdat <- mv_data
+MRres=MendelianRandomization::mr_mvivw(
+  mr_mvinput(bx = cbind(mvdat$exposure_beta), 
+             bxse = cbind(mvdat$exposure_se),
+             by = mvdat$outcome_beta,
+             byse = mvdat$outcome_se),
+  model = "random"
+)
