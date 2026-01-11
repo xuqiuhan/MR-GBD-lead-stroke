@@ -1,11 +1,5 @@
----
-title: "Untitled"
-output: html_document
-date: "2025-04-24"
----
 
 
-#ES模型
 ```{r}
 library(forecast)
 #install.packages("fpp2")
@@ -244,7 +238,7 @@ fig4 <- ggplot(temp6,aes(x=year,y=val,group=group,fill=group,color=group))+
 geom_line(linewidth=0.5)+ geom_vline(aes(xintercept=2023), colour="grey", linetype="dashed")+
 geom_ribbon(aes(ymin=lower,ymax=upper),alpha=0.1,color=NA)+
 facet_wrap(vars(location,sex,measure,cause),ncol=4,
-scales = "free_y",# 控制 y 轴尺度,"free","free_y","free_x"   ###注意上面改30
+scales = "free_y",# 控制 y 轴尺度,"free","free_y","free_x"  
 strip.position = "top")
 
 fig4 <- fig4+theme_classic()+ theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position="top",strip.text = element_text(size = 10))+scale_color_manual(values=c("#ED0000FF","#0099B4FF","#42B540FF")) +scale_fill_manual(values=c("#ED0000FF","#0099B4FF","#42B540FF"))+ylab(paste0("Age-standardized Rate of ", index_measure[i]," (per 100,000)"))+xlab("")
