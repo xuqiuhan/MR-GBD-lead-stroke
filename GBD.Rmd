@@ -1,0 +1,256 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-04-24"
+---
+
+
+#ES模型
+```{r}
+library(forecast)
+#install.packages("fpp2")
+library(fpp2)
+library(tidyverse)
+merge.all=NULL
+for (k in 1:4) {
+  
+  global= mydata %>% filter(location=="Global") %>% filter(cause==index_cause[k])
+
+EC.pred.ASR=NULL
+for (i in index_measure) {
+  for (j in index_sex) {
+  A1 <- global %>%
+    filter(age=='Age-standardized',
+           metric== 'Rate',
+           measure == i,
+           sex==j,
+           ) %>%
+    select(year,val,upper,lower)  # 只取需要的变量
+  train<- A1$val
+  train<-ts(train, start=1990)
+  fc1 <- holt(train, damped=TRUE, phi = 0.9, h=27)
+  fc1=as.data.frame(fc1)
+  fc1= fc1 %>% mutate(year=rownames(fc1),sex=j,measure=i)
+
+  EC.pred.ASR=rbind(EC.pred.ASR,fc1)
+  }
+}
+
+
+EC.pred.number=NULL
+for (i in index_measure) {
+  for (j in index_sex) {
+  A1 <- global %>%
+    filter(age == 'All ages',
+           metric == 'Number',
+           measure == i,
+           sex==j,
+           ) %>%
+    select(year,val,upper,lower)  # 只取需要的变量
+  train<- A1$val
+  train<-ts(train, start=1990)
+  fc1 <- holt(train, damped=TRUE, phi = 0.9, h=27)
+  fc1=as.data.frame(fc1)
+  fc1= fc1 %>% mutate(year=rownames(fc1),sex=j,measure=i)
+  fc1$year=as.numeric(fc1$year)
+  EC.pred.number=rbind(EC.pred.number,fc1)
+  }
+}
+
+merge=merge(EC.pred.number,EC.pred.ASR,by = c("year","sex","measure"))
+name.=str_replace_all(names(merge)[4:13],".x",".number")
+name.=str_replace_all(name.,".y",".ASR")
+names(merge)[4:13]=name.
+merge$cause=index_cause[k]
+merge.all=rbind(merge.all,merge)
+}
+
+write.csv(merge.all,file = "predict.ES.csv")
+
+
+```
+
+
+
+```{r}
+
+
+{
+dput(names(merge.all))
+  merge.all$location="Global"
+predicted.value=merge.all[,c("year", "Point Forecast.ASR",  "location","sex", "measure","cause","Lo 95.ASR","Hi 95.ASR")]
+names(predicted.value)=c("year", "val", "location", "sex", "measure","cause","lower","upper")
+
+
+# 1选择
+temp <- mydata  %>% 
+filter(measure %in% index_measure) %>% filter(location %in% "Global") %>%  #dput(index_measure)
+filter(age %in% 
+     c(index_age[2])) %>%  #dput(index_age_group) dput(index_age)
+filter(metric %in% 
+     c(index_metric[1])) %>% # dput(index_metric)
+# filter(location %in% c("Global")) %>% # dput(super_region7) dput(location204) "Global"
+filter(year %in% 1990:2023) # dput(index_year)
+
+dput(names(temp))
+
+temp=temp[,c("year", "val","location", "sex","measure","cause")]
+temp$lower=NA
+temp$upper=NA
+temp$group="val"
+predicted.value$group="predicted"
+
+
+AD1=rbind(predicted.value,temp)
+
+names(AD1)
+  
+}
+
+
+{
+  
+    
+temp6 =AD1 %>% filter(location %in% "Global") 
+
+fig4 <- ggplot(temp6,aes(x=year,y=val,group=group,fill=group,color=group))+
+geom_line(linewidth=0.5)+ geom_vline(aes(xintercept=2023), colour="grey", linetype="dashed")+
+geom_ribbon(aes(ymin=lower,ymax=upper),alpha=0.1,color=NA)+
+facet_wrap(vars(location,sex,measure,cause),ncol=4,
+scales = "free_y",# 控制 y 轴尺度,"free","free_y","free_x"   ###注意上面改30
+strip.position = "top")
+
+fig4 <- fig4+theme_classic()+ theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position="top",strip.text = element_text(size = 10))+scale_color_manual(values=c("#ED0000FF","#0099B4FF","#42B540FF")) +scale_fill_manual(values=c("#ED0000FF","#0099B4FF","#42B540FF"))+ylab(paste0("Age-standardized Rate of ", index_measure[i]," (per 100,000)"))+xlab("")
+ggsave(paste("ES",".pdf",sep=""),height = 12,width = 12)
+  }
+
+
+
+```
+
+
+
+#ARIMA
+```{r}
+library(ggplot2)
+library(forecast)
+
+
+merge.all=NULL
+for (k in 1:4) {
+  
+  global= mydata %>% filter(location=="Global") %>% filter(cause==index_cause[k])
+
+EC.pred.ASR=NULL
+for (i in index_measure) {
+  for (j in index_sex) {
+  A1 <- global %>%
+    filter(age=='Age-standardized',
+           metric== 'Rate',
+           measure == i,
+           sex==j,
+           ) %>%
+    select(year,val,upper,lower)  # 只取需要的变量
+
+  fit.arima <- auto.arima(A1$val)
+  summary(fit.arima)
+  b1<-forecast(fit.arima,h=27)
+  
+  fc1=as.data.frame(b1)
+  fc1= fc1 %>% mutate(year=rownames(fc1),sex=j,measure=i)
+  fc1$year= as.numeric(fc1$year)+1989
+  EC.pred.ASR=rbind(EC.pred.ASR,fc1)
+  }
+}
+
+
+
+EC.pred.number=NULL
+for (i in index_measure) {
+  for (j in index_sex) {
+  A1 <- global %>%
+    filter(age == 'All ages',
+           metric == 'Number',
+           measure == i,
+           sex==j,
+           ) %>%
+    select(year,val,upper,lower)  # 只取需要的变量
+
+  fit.arima <- auto.arima(A1$val)
+  summary(fit.arima)
+  b1<-forecast(fit.arima,h=27)
+  
+  fc1=as.data.frame(b1)
+  fc1= fc1 %>% mutate(year=rownames(fc1),sex=j,measure=i)
+  fc1$year= as.numeric(fc1$year)+1989
+  EC.pred.number=rbind(EC.pred.number,fc1)
+  }
+}
+
+
+merge=merge(EC.pred.number,EC.pred.ASR,by = c("year","sex","measure"))
+name.=str_replace_all(names(merge)[4:13],".x",".number")
+name.=str_replace_all(name.,".y",".ASR")
+names(merge)[4:13]=name.
+
+merge$cause=index_cause[k]
+merge.all=rbind(merge.all,merge)
+}
+
+write.csv(merge.all,file = "predict.arima.csv")
+```
+
+
+```{r}
+{
+dput(names(merge.all))
+  merge.all$location="Global"
+predicted.value=merge.all[,c("year", "Point Forecast.ASR",  "location","sex", "measure","cause","Lo 95.ASR","Hi 95.ASR")]
+names(predicted.value)=c("year", "val", "location", "sex", "measure","cause","lower","upper")
+
+
+# 1选择
+temp <- mydata  %>% 
+filter(measure %in% index_measure) %>% filter(location %in% "Global") %>%  #dput(index_measure)
+filter(age %in% 
+     c(index_age[2])) %>%  #dput(index_age_group) dput(index_age)
+filter(metric %in% 
+     c(index_metric[1])) %>% # dput(index_metric)
+# filter(location %in% c("Global")) %>% # dput(super_region7) dput(location204) "Global"
+filter(year %in% 1990:2023) # dput(index_year)
+
+dput(names(temp))
+
+temp=temp[,c("year", "val","location", "sex","measure","cause")]
+temp$lower=NA
+temp$upper=NA
+temp$group="val"
+predicted.value$group="predicted"
+
+
+AD1=rbind(predicted.value,temp)
+
+names(AD1)
+  
+}
+
+
+{
+  
+    
+temp6 =AD1 %>% filter(location %in% "Global") 
+
+fig4 <- ggplot(temp6,aes(x=year,y=val,group=group,fill=group,color=group))+
+geom_line(linewidth=0.5)+ geom_vline(aes(xintercept=2023), colour="grey", linetype="dashed")+
+geom_ribbon(aes(ymin=lower,ymax=upper),alpha=0.1,color=NA)+
+facet_wrap(vars(location,sex,measure,cause),ncol=4,
+scales = "free_y",# 控制 y 轴尺度,"free","free_y","free_x"   ###注意上面改30
+strip.position = "top")
+
+fig4 <- fig4+theme_classic()+ theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position="top",strip.text = element_text(size = 10))+scale_color_manual(values=c("#ED0000FF","#0099B4FF","#42B540FF")) +scale_fill_manual(values=c("#ED0000FF","#0099B4FF","#42B540FF"))+ylab(paste0("Age-standardized Rate of ", index_measure[i]," (per 100,000)"))+xlab("")
+ggsave(paste("arima",".pdf",sep=""),height = 12,width = 12)
+  }
+
+
+
+```
